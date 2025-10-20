@@ -23,6 +23,15 @@ export interface Config {
     // window size that we allow for a stream.
     maxStreamWindowSize?: number;
 
+    // StreamOpenTimeout is the timeout for establishing a new stream.
+    // If a stream is not established within this timeout, the session is closed.
+    streamOpenTimeout?: number; // In seconds
+
+    // StreamCloseTimeout is the timeout for closing a stream.
+    // If a stream is not fully closed within this timeout after sending FIN,
+    // it will be forcibly closed to prevent memory leaks from misbehaving peers.
+    streamCloseTimeout?: number; // In seconds
+
     // Logger is used to pass in the logger to be used.
     logger?: typeof console.log;
 }
@@ -33,5 +42,7 @@ export const defaultConfig = {
     keepAliveInterval: 30, // In seconds
     connectionWriteTimeout: 10, // In seconds
     maxStreamWindowSize: initialStreamWindow,
+    streamOpenTimeout: 5 * 60, // In seconds, 0 means disabled
+    streamCloseTimeout: 70, // In seconds, 0 means disabled
     logger: console.log,
 };

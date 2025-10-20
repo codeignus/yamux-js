@@ -12,6 +12,7 @@ export class Stream extends Duplex {
     private state: STREAM_STATES;
     private recvBuf?: Buffer;
     private controlHdr?: Header;
+    private closeTimer?: NodeJS.Timeout;
 
     constructor(session: Session, id: number, state: STREAM_STATES) {
         super();
@@ -131,22 +132,58 @@ export class Stream extends Duplex {
     }
 
     public close() {
+        let closeStream = false;
+
         switch (this.state) {
             // Opened means we need to signal a close
             case STREAM_STATES.SYNSent:
             case STREAM_STATES.SYNReceived:
             case STREAM_STATES.Established:
                 this.state = STREAM_STATES.LocalClose;
-                this.sendClose();
                 break;
 
             case STREAM_STATES.LocalClose:
             case STREAM_STATES.RemoteClose:
-                this.state = STREAM_STATES.LocalClose;
-                this.sendClose();
-                this.session.closeStream(this.id);
+                this.state = STREAM_STATES.Closed;
+                closeStream = true;
                 break;
+
+            case STREAM_STATES.Closed:
+            case STREAM_STATES.Reset:
+                return;
         }
+
+        // Cancel any existing close timer
+        if (this.closeTimer) {
+            clearTimeout(this.closeTimer);
+            this.closeTimer = undefined;
+        }
+
+        // Set close timeout if configured and not already closing
+        if (!closeStream && this.session.config.streamCloseTimeout > 0) {
+            this.closeTimer = setTimeout(() => {
+                this.closeTimeout();
+            }, this.session.config.streamCloseTimeout * 1000);
+        }
+
+        this.sendClose();
+
+        if (closeStream) {
+            this.session.closeStream(this.id);
+        }
+    }
+
+    // closeTimeout is called after StreamCloseTimeout during a close
+    private closeTimeout() {
+        // Close our side forcibly
+        this.forceClose();
+
+        // Free the stream from the session map
+        this.session.closeStream(this.id);
+
+        // Send a RST so the remote side closes too
+        const hdr = new Header(VERSION, TYPES.WindowUpdate, FLAGS.RST, this.id, 0);
+        this.session.send(hdr);
     }
 
     public forceClose() {
@@ -159,9 +196,10 @@ export class Stream extends Duplex {
         if (flags === FLAGS.ACK) {
             if (this.state === STREAM_STATES.SYNSent) {
                 this.state = STREAM_STATES.Established;
+                (this.session as any).establishStream(this.id);
             }
         }
-        if (flags === FLAGS.SYN) {
+        if (flags === FLAGS.FIN) {
             switch (this.state) {
                 case STREAM_STATES.SYNSent:
                 case STREAM_STATES.SYNReceived:
@@ -185,6 +223,11 @@ export class Stream extends Duplex {
         }
 
         if (closeStream) {
+            // Cancel close timer since we gracefully closed
+            if (this.closeTimer) {
+                clearTimeout(this.closeTimer);
+                this.closeTimer = undefined;
+            }
             this.session.closeStream(this.id);
         }
     }
@@ -192,5 +235,23 @@ export class Stream extends Duplex {
     public incrSendWindow(hdr: Header) {
         this.processFlags(hdr.flags);
         this.sendWindow += hdr.length;
+    }
+
+    // Shrink is used to compact the amount of buffers utilized
+    // This is useful when using Yamux in a connection pool to reduce
+    // the idle memory utilization.
+    public shrink(): void {
+        if (this.recvBuf && this.recvBuf.length === 0) {
+            this.recvBuf = undefined;
+        }
+    }
+
+    // clearOpenTimeout clears the stream open timeout when stream is established
+    private clearOpenTimeout(): void {
+        const timeoutId = (this as any)._openTimeoutId;
+        if (timeoutId) {
+            clearTimeout(timeoutId);
+            (this as any)._openTimeoutId = undefined;
+        }
     }
 }

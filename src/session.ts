@@ -4,6 +4,7 @@ import {FLAGS, STREAM_STATES, TYPES, VERSION, GO_AWAY_ERRORS, ERRORS} from './co
 import {Header} from './header';
 import {Config, defaultConfig} from './mux';
 import {Stream} from './stream';
+import {Semaphore} from './util';
 
 export class Session extends Transform {
     // localGoAway indicates that we should stop accepting further connections
@@ -26,6 +27,12 @@ export class Session extends Transform {
     // streams maps a stream id to a stream
     private streams: Map<number, Stream> = new Map();
 
+    // inflight has an entry for outgoing streams that have been opened but not yet established (SYN sent, ACK not received)
+    private inflight: Map<number, boolean> = new Map();
+
+    // synSemaphore acts like a semaphore to limit inflight SYNs based on AcceptBacklog
+    private synSemaphore: Semaphore;
+
     // shutdown is used to safely close a session
     private shutdown = false;
 
@@ -47,6 +54,9 @@ export class Session extends Transform {
             ...defaultConfig,
             ...config,
         };
+
+        // Initialize semaphore with acceptBacklog capacity
+        this.synSemaphore = new Semaphore(this.config.acceptBacklog);
 
         if (this.config.enableKeepAlive) {
             this.keepalive();
@@ -146,6 +156,11 @@ export class Session extends Transform {
     }
 
     public closeStream(streamID: number) {
+        // If stream was inflight, release the semaphore
+        if (this.inflight.has(streamID)) {
+            this.inflight.delete(streamID);
+            this.synSemaphore.release();
+        }
         this.streams.delete(streamID);
     }
 
@@ -169,6 +184,7 @@ export class Session extends Transform {
 
         this.shutdown = true;
         this.streams.forEach((stream) => {
+            (stream as any).clearOpenTimeout(); // Clear any pending open timeouts
             stream.forceClose();
             stream.destroy();
         });
@@ -220,7 +236,7 @@ export class Session extends Transform {
     }
 
     // Open is used to create a new stream
-    public open(): Stream {
+    public async openStream(): Promise<Stream> {
         const stream = new Stream(this, this.nextStreamID, STREAM_STATES.Init);
         this.nextStreamID += 2;
 
@@ -233,10 +249,43 @@ export class Session extends Transform {
             return stream;
         }
 
+        // Block until we can acquire a semaphore permit
+        // No timeout needed as external streamOpenTimeout handles
+        await this.synSemaphore.acquire();
+
         this.streams.set(stream.ID(), stream);
+        this.inflight.set(stream.ID(), true);
+
+        // Set open timeout if configured
+        if (this.config.streamOpenTimeout > 0) {
+            this.setOpenTimeout(stream);
+        }
+
         stream.sendWindowUpdate();
 
         return stream;
+    }
+
+    // setOpenTimeout implements a timeout for streams that are opened but not established.
+    // If the StreamOpenTimeout is exceeded we assume the peer is unable to ACK,
+    // and close the session.
+    // The number of running timers is bounded by the capacity of the synCh.
+    private setOpenTimeout(stream: Stream) {
+        const timeoutMs = this.config.streamOpenTimeout * 1000;
+        const streamIsEstablished = (stream as any).state === STREAM_STATES.Established;
+
+        const timeoutId = setTimeout(() => {
+            // Check if stream is still not established and session is still active
+            if (!streamIsEstablished && !this.isClosed()) {
+                // Timeout reached while waiting for ACK.
+                // Close the session to force connection re-establishment.
+                this.config.logger(`[ERR] yamux: aborted stream open: ${ERRORS.errTimeout}`);
+                this.close();
+            }
+        }, timeoutMs);
+
+        // Store timeout ID on stream for cleanup when established
+        (stream as any)._openTimeoutId = timeoutId;
     }
 
     private handlePing(hdr: Header) {
@@ -305,6 +354,21 @@ export class Session extends Transform {
             default:
                 this.config.logger('[ERR] yamux: received unexpected go away');
                 return this.close(new Error('unexpected go away received'));
+        }
+    }
+
+    // establishStream is used to mark a stream that was in the
+    // SYN Sent state as established.
+    private establishStream(streamID: number) {
+        if (this.inflight.has(streamID)) {
+            this.inflight.delete(streamID);
+            this.synSemaphore.release();
+
+            // Clear the open timeout since stream is now established
+            const stream = this.streams.get(streamID);
+            if (stream) {
+                (stream as any).clearOpenTimeout();
+            }
         }
     }
 }

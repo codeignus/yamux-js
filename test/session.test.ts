@@ -84,17 +84,18 @@ describe('Server session', () => {
             const message = 'echo-' + i;
             expectedOutput.add(message);
 
-            const stream = client.open();
-            stream.on('data', (data) => {
-                const received = data.toString();
-                expect(expectedOutput.has(received)).to.be.true;
-                expectedOutput.delete(received);
-                if (expectedOutput.size === 0) {
-                    done();
-                }
+            client.openStream().then((stream) => {
+                stream.on('data', (data) => {
+                    const received = data.toString();
+                    expect(expectedOutput.has(received)).to.be.true;
+                    expectedOutput.delete(received);
+                    if (expectedOutput.size === 0) {
+                        done();
+                    }
+                });
+                // Send the message and wait to get it back
+                stream.write(message);
             });
-            // Send the message and wait to get it back
-            stream.write(message);
         }
     });
 
@@ -115,18 +116,19 @@ describe('Server session', () => {
             const message = ('echo-' + i).repeat(10000);
             expectedOutput.add(message);
 
-            const stream = client.open();
-            expect(stream).to.not.be.undefined;
-            stream!.on('data', (data) => {
-                const received = data.toString();
-                expect(expectedOutput.has(received)).to.be.true;
-                expectedOutput.delete(received);
-                if (expectedOutput.size === 0) {
-                    done();
-                }
+            client.openStream().then((stream) => {
+                expect(stream).to.not.be.undefined;
+                stream!.on('data', (data) => {
+                    const received = data.toString();
+                    expect(expectedOutput.has(received)).to.be.true;
+                    expectedOutput.delete(received);
+                    if (expectedOutput.size === 0) {
+                        done();
+                    }
+                });
+                // Send the message and wait to get it back
+                stream!.write(message);
             });
-            // Send the message and wait to get it back
-            stream!.write(message);
         }
     });
 
@@ -146,16 +148,17 @@ describe('Server session', () => {
         const message = Buffer.alloc(1024).fill(0x42);
         expectedOutput.add(message.toString());
 
-        const stream = client.open();
-        expect(stream).to.not.be.undefined;
+        client.openStream().then((stream) => {
+            expect(stream).to.not.be.undefined;
 
-        stream.on('data', (data) => {
-            expect(stream['recvWindow']).to.equal(initialStreamWindow - 1024)
-            done();
+            stream.on('data', (data) => {
+                expect(stream['recvWindow']).to.equal(initialStreamWindow - 1024)
+                done();
+            });
+
+            // Send the message and wait to get it back
+            stream.write(message);
         });
-
-        // Send the message and wait to get it back
-        stream.write(message);
     });
 
     it('updates the receive window - and resets it when needed', (done) => {
@@ -174,16 +177,17 @@ describe('Server session', () => {
         const message = Buffer.alloc(200 * 1024).fill(0x42);
         expectedOutput.add(message.toString());
 
-        const stream = client.open();
-        expect(stream).to.not.be.undefined;
+        client.openStream().then((stream) => {
+            expect(stream).to.not.be.undefined;
 
-        stream.on('data', (data) => {
-            expect(stream['recvWindow']).to.equal(initialStreamWindow)
-            done();
+            stream.on('data', (data) => {
+                expect(stream['recvWindow']).to.equal(initialStreamWindow)
+                done();
+            });
+
+            // Send the message and wait to get it back
+            stream.write(message);
         });
-
-        // Send the message and wait to get it back
-        stream.write(message);
     });
 
     it('handles Go away', (done) => {
@@ -193,8 +197,9 @@ describe('Server session', () => {
             done();
         });
         server.close();
-        const stream = client.open();
-        expect(stream).to.be.undefined;
+        client.openStream().then((stream) => {
+            expect(stream).to.be.undefined;
+        });
     });
 
     it('handles many streams', (done) => {
@@ -218,18 +223,19 @@ describe('Server session', () => {
             const message = 'echo-' + i;
             expectedOutput.add(message);
 
-            const stream = client.open();
-            expect(stream).to.not.be.undefined;
-            stream!.on('data', (data) => {
-                const received = data.toString();
-                expect(expectedOutput.has(received)).to.be.true;
-                expectedOutput.delete(received);
-                if (expectedOutput.size === 0) {
-                    done();
-                }
+            client.openStream().then((stream) => {
+                expect(stream).to.not.be.undefined;
+                stream!.on('data', (data) => {
+                    const received = data.toString();
+                    expect(expectedOutput.has(received)).to.be.true;
+                    expectedOutput.delete(received);
+                    if (expectedOutput.size === 0) {
+                        done();
+                    }
+                });
+                // Send the message and wait to get it back
+                stream!.write(message);
             });
-            // Send the message and wait to get it back
-            stream!.write(message);
         }
     });
 
@@ -241,40 +247,42 @@ describe('Server session', () => {
 
         let hasReceivedMessageBeforeWindowUpdate = false;
 
-        const stream = client.open();
-        stream.on('data', (data) => {
-            const received = data.toString();
+        client.openStream().then((stream) => {
+            stream.on('data', (data) => {
+                const received = data.toString();
 
-            if (!hasReceivedMessageBeforeWindowUpdate) {
-                expect(received).to.equal('Data before window update');
-                hasReceivedMessageBeforeWindowUpdate = true;
-            } else {
-                expect(received).to.equal('Data after window update');
-            }
+                if (!hasReceivedMessageBeforeWindowUpdate) {
+                    expect(received).to.equal('Data before window update');
+                    hasReceivedMessageBeforeWindowUpdate = true;
+                } else {
+                    expect(received).to.equal('Data after window update');
+                }
+            });
+
+            stream.write('Data before window update');
+
+            client.openStream().then((stream2) => {
+                stream2.on('data', (data) => {
+                    const received = data.toString();
+                    expect(received).to.equal('unrelated data');
+                    done();
+                });
+
+                const dataWithHeader = (streamID: number, data: string) =>
+                    Buffer.concat([new Header(VERSION, TYPES.Data, 0, streamID, data.length).encode(), Buffer.from(data)]);
+
+                // Update the window (size += 1)
+                const hdr = new Header(VERSION, TYPES.WindowUpdate, FLAGS.ACK, stream.ID(), 1);
+                // Send additional data along with the window update, for both streams
+                client.send(
+                    hdr,
+                    Buffer.concat([
+                        dataWithHeader(stream.ID(), 'Data after window update'),
+                        dataWithHeader(stream2.ID(), 'unrelated data'),
+                    ])
+                );
+            });
         });
-
-        stream.write('Data before window update');
-
-        const stream2 = client.open();
-        stream2.on('data', (data) => {
-            const received = data.toString();
-            expect(received).to.equal('unrelated data');
-            done();
-        });
-
-        const dataWithHeader = (streamID: number, data: string) =>
-            Buffer.concat([new Header(VERSION, TYPES.Data, 0, streamID, data.length).encode(), Buffer.from(data)]);
-
-        // Update the window (size += 1)
-        const hdr = new Header(VERSION, TYPES.WindowUpdate, FLAGS.ACK, stream.ID(), 1);
-        // Send additional data along with the window update, for both streams
-        client.send(
-            hdr,
-            Buffer.concat([
-                dataWithHeader(stream.ID(), 'Data after window update'),
-                dataWithHeader(stream2.ID(), 'unrelated data'),
-            ])
-        );
     });
 });
 
@@ -286,6 +294,6 @@ describe('Server/client', () => {
         });
         const client = new Session(true, testConfig);
         client.pipe(server).pipe(client);
-        client.open();
+        client.openStream();
     });
 });
