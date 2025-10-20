@@ -1,4 +1,4 @@
-import {Duplex, Transform, TransformCallback} from 'stream';
+import {Transform, TransformCallback} from 'stream';
 
 import {FLAGS, STREAM_STATES, TYPES, VERSION, GO_AWAY_ERRORS, ERRORS} from './constants';
 import {Header} from './header';
@@ -37,19 +37,18 @@ export class Session extends Transform {
     private shutdown = false;
 
     // Callback when a steam had been created
-    protected onStream?: (duplex: Duplex) => void;
+    public onIncomingStream?: (stream: Stream) => void;
 
     // Current header from data received
     private currentHeader?: Header;
 
-    constructor(client: boolean, config?: Config, onStream?: (duplex: Duplex) => void) {
+    constructor(client: boolean, config?: Config) {
         super();
         if (client) {
             this.nextStreamID = 1;
         } else {
             this.nextStreamID = 2;
         }
-        this.onStream = onStream;
         this.config = {
             ...defaultConfig,
             ...config,
@@ -224,8 +223,8 @@ export class Session extends Transform {
             return this.send(hdr);
         }
 
-        if (this.onStream) {
-            this.onStream(stream);
+        if (this.onIncomingStream) {
+            this.onIncomingStream(stream);
         }
     }
 

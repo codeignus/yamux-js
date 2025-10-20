@@ -5,7 +5,7 @@ import {Session} from '../src/session';
 
 describe('Server', () => {
     it('is a Session instance', () => {
-        const server = new Server((_) => {});
+        const server = new Server();
         expect(server instanceof Session).to.be.true;
         server.close();
     });

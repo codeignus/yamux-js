@@ -23,7 +23,12 @@ const getServerAndClient = (
     clientConfig = testConfig,
     onStream?: (duplex: Duplex) => void
 ) => {
-    const server = new Session(false, serverConfig, onStream);
+    const server = new Session(false, serverConfig);
+    if (onStream) {
+        server.onIncomingStream = (stream) => {
+            onStream(stream);
+        };
+    }
     const client = new Session(true, clientConfig);
     client.pipe(server).pipe(client);
 
@@ -288,10 +293,11 @@ describe('Server session', () => {
 
 describe('Server/client', () => {
     it('handles close before ack', (done) => {
-        const server = new Session(false, testConfig, (stream) => {
+        const server = new Session(false, testConfig);
+        server.onIncomingStream = (stream) => {
             stream.end(); // Close the stream immediately
             done();
-        });
+        };
         const client = new Session(true, testConfig);
         client.pipe(server).pipe(client);
         client.openStream();
