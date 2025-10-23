@@ -184,7 +184,6 @@ export class Session extends Transform {
         this.shutdown = true;
         this.streams.forEach((stream) => {
             (stream as any).clearOpenTimeout(); // Clear any pending open timeouts
-            stream.forceClose();
             stream.destroy();
         });
 

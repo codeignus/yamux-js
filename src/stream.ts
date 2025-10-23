@@ -28,6 +28,26 @@ export class Stream extends Duplex {
         return this.id;
     }
 
+    // Override destroy
+    destroy(error?: Error): this {
+        this.forceClose();
+
+        // Always call super.destroy to ensure proper stream behavior
+        return super.destroy(error);
+    }
+    // Overload declarations (match Node.js signatures)
+    end(cb?: () => void): this;
+    end(chunk: any, cb?: () => void): this;
+    end(chunk: any, encoding: BufferEncoding, cb?: () => void): this;
+
+    // Implementation
+    end(chunk?: any, encodingOrCb?: any, cb?: any): this {
+        this.close();
+
+        // Call parent Duplex's end() so writable side finishes correctly
+        return super.end(chunk as any, encodingOrCb, cb);
+    }
+
     public _read(size: number): void {
         if (size > this.recvWindow) {
             this.session.config.logger(
@@ -131,7 +151,7 @@ export class Stream extends Duplex {
         }
     }
 
-    public close() {
+    private close() {
         let closeStream = false;
 
         switch (this.state) {
@@ -186,7 +206,7 @@ export class Stream extends Duplex {
         this.session.send(hdr);
     }
 
-    public forceClose() {
+    private forceClose() {
         this.state = STREAM_STATES.Closed;
     }
 
@@ -205,6 +225,7 @@ export class Stream extends Duplex {
                 case STREAM_STATES.SYNReceived:
                 case STREAM_STATES.Established:
                     this.state = STREAM_STATES.RemoteClose;
+                    this.push(null); // ← Signals EOF, emits 'end'
                     break;
                 case STREAM_STATES.LocalClose:
                     this.state = STREAM_STATES.Closed;
